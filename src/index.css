@@ -17,11 +17,11 @@
 
 /* Glass styling for game HUD without expensive backdrop-filter on slow GPUs */
 .hud-panel {
-  background: rgba(10, 15, 29, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 29, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.14);
 }
 
 .hud-panel-accent {
-  background: rgba(16, 24, 46, 0.9);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  background: rgba(16, 24, 46, 0.92);
+  border: 1px solid rgba(59, 130, 246, 0.35);
 }

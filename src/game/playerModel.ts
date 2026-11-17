@@ -1,541 +1,265 @@
 import * as THREE from 'three';
 import { PlayerData, TeamData } from '../types/game';
 
-export interface Player3D {
-  data: PlayerData;
-  team: TeamData;
-  isHomeTeam: boolean;
+export interface PlayerMeshHandle {
   group: THREE.Group;
-  
-  // Skeletal animation joint groups
   bodyGroup: THREE.Group;
-  leftLegGroup: THREE.Group;
-  rightLegGroup: THREE.Group;
-  leftKneeGroup: THREE.Group;
-  rightKneeGroup: THREE.Group;
-  leftArmGroup: THREE.Group;
-  rightArmGroup: THREE.Group;
-  headMesh: THREE.Mesh;
-  
-  // Selection indicator
-  indicatorMesh: THREE.Mesh;
-  directionArrow: THREE.Mesh;
-  cardMesh?: THREE.Mesh;
-  
-  // Kinematic state
-  position: THREE.Vector3;
-  velocity: THREE.Vector3;
-  targetRotationY: number;
-  animTime: number;
-  kickTimer: number;
-  slideTimer: number;
-  diveTimer: number;
-  diveDirection: number; // -1 left, 1 right
-  celebrateTimer: number;
-  cardTimer: number;
-  stamina: number;
-  
-  // Methods
-  update: (dt: number, isControlled: boolean) => void;
-  triggerKick: () => void;
-  triggerSlideTackle: () => void;
-  triggerDive: (direction: number) => void;
-  triggerCelebration: () => void;
-  showCard: (card: 'yellow' | 'red') => void;
-  setPosition: (x: number, z: number) => void;
+  leftLeg: THREE.Group;
+  rightLeg: THREE.Group;
+  leftArm: THREE.Group;
+  rightArm: THREE.Group;
+  ringMesh: THREE.Mesh;
+  dirArrowMesh: THREE.Mesh;
+  cardSprite: THREE.Mesh;
+  updateAnimation: (
+    dt: number,
+    speed: number,
+    isKicking: boolean,
+    isTackling: boolean,
+    isDiving: number,
+    isCelebrating: boolean
+  ) => void;
+  setControlled: (active: boolean, color?: number) => void;
+  showCard: (type: 'yellow' | 'red' | null) => void;
 }
 
-// Texture cache to prevent duplicating canvas textures across 22 players
-const jerseyTextureCache = new Map<string, THREE.CanvasTexture>();
+function createJerseyTexture(
+  primary: string,
+  secondary: string,
+  pattern: TeamData['pattern'],
+  number: number
+): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 256;
+  const ctx = c.getContext('2d')!;
 
-function createJerseyTexture(team: TeamData, number: number, isGK: boolean): THREE.CanvasTexture {
-  const cacheKey = `${team.id}_${number}_${isGK ? 'gk' : 'field'}_${team.primaryColor}_${team.secondaryColor}_${team.kitPattern}`;
-  if (jerseyTextureCache.has(cacheKey)) {
-    return jerseyTextureCache.get(cacheKey)!;
-  }
-
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 256;
-  const ctx = canvas.getContext('2d')!;
-
-  const primary = isGK ? team.gkColor : team.primaryColor;
-  const secondary = isGK ? '#111827' : team.secondaryColor;
-  const accent = team.accentColor;
-
-  // Front & Back base
   ctx.fillStyle = primary;
   ctx.fillRect(0, 0, 256, 256);
 
-  // Patterns
-  if (!isGK) {
-    if (team.kitPattern === 'stripes') {
-      ctx.fillStyle = secondary;
-      const stripeW = 256 / 8;
-      for (let i = 0; i < 8; i += 2) {
-        ctx.fillRect(i * stripeW, 0, stripeW, 256);
-      }
-    } else if (team.kitPattern === 'hoops') {
-      ctx.fillStyle = secondary;
-      const hoopH = 256 / 8;
-      for (let i = 0; i < 8; i += 2) {
-        ctx.fillRect(0, i * hoopH, 256, hoopH);
-      }
-    } else if (team.kitPattern === 'sash') {
-      ctx.fillStyle = secondary;
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.lineTo(80, 0);
-      ctx.lineTo(256, 256);
-      ctx.lineTo(176, 256);
-      ctx.closePath();
-      ctx.fill();
+  if (pattern === 'stripes') {
+    ctx.fillStyle = secondary;
+    for (let x = 0; x < 256; x += 48) {
+      ctx.fillRect(x, 0, 22, 256);
     }
+  } else if (pattern === 'hoops') {
+    ctx.fillStyle = secondary;
+    for (let y = 0; y < 256; y += 52) {
+      ctx.fillRect(0, y, 256, 24);
+    }
+  } else if (pattern === 'sash') {
+    ctx.fillStyle = secondary;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(75, 0);
+    ctx.lineTo(256, 200);
+    ctx.lineTo(256, 256);
+    ctx.lineTo(180, 256);
+    ctx.lineTo(0, 56);
+    ctx.closePath();
+    ctx.fill();
   }
 
-  // Collar V-neck
-  ctx.fillStyle = accent;
-  ctx.beginPath();
-  ctx.moveTo(100, 0);
-  ctx.lineTo(128, 40);
-  ctx.lineTo(156, 0);
-  ctx.closePath();
-  ctx.fill();
-
-  // Kit Number on back
-  ctx.fillStyle = accent;
-  ctx.font = 'bold 70px "Barlow Condensed", sans-serif';
+  // Number on back
+  ctx.fillStyle = primary.toLowerCase() === '#ffffff' || primary.toLowerCase() === '#f8fafc' ? '#0f172a' : '#ffffff';
+  ctx.strokeStyle = '#0f172a';
+  ctx.lineWidth = 5;
+  ctx.font = 'bold 92px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(String(number), 128, 140);
+  ctx.strokeText(String(number), 128, 134);
+  ctx.fillText(String(number), 128, 134);
 
-  // Team chest crest badge
-  ctx.fillStyle = accent;
-  ctx.beginPath();
-  ctx.arc(80, 70, 14, 0, Math.PI * 2);
-  ctx.fill();
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  jerseyTextureCache.set(cacheKey, texture);
-  return texture;
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
-export function createPlayer3D(player: PlayerData, team: TeamData, isHomeTeam: boolean): Player3D {
+export function createPlayerMesh(player: PlayerData, team: TeamData): PlayerMeshHandle {
   const group = new THREE.Group();
-  group.name = `Player_${player.name}`;
-
-  const isGK = player.position === 'GK';
-  const scale = player.height || 1.0;
-
-  // Shared / reusable materials for this player
-  const skinTone = player.skinTone || '#e0b892';
-  const skinMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(skinTone),
-    roughness: 0.7,
-    metalness: 0.05,
-  });
-
-  const hairColor = player.hairColor || '#1c150e';
-  const hairMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(hairColor),
-    roughness: 0.85,
-    metalness: 0.05,
-  });
-
-  const jerseyTex = createJerseyTexture(team, player.number, isGK);
-  const jerseyMat = new THREE.MeshStandardMaterial({
-    map: jerseyTex,
-    roughness: 0.55,
-    metalness: 0.1,
-  });
-
-  const shortsMat = new THREE.MeshStandardMaterial({
-    color: isGK ? new THREE.Color(0x111827) : new THREE.Color(team.secondaryColor),
-    roughness: 0.6,
-    metalness: 0.05,
-  });
-
-  const socksMat = new THREE.MeshStandardMaterial({
-    color: isGK ? new THREE.Color(team.gkColor) : new THREE.Color(team.primaryColor),
-    roughness: 0.6,
-    metalness: 0.05,
-  });
-
-  const cleatMat = new THREE.MeshStandardMaterial({
-    color: 0x18181b,
-    roughness: 0.3,
-    metalness: 0.5,
-  });
-
-  // Base group containing animated torso and limbs
   const bodyGroup = new THREE.Group();
-  bodyGroup.position.y = 0; // pivot at ground
   group.add(bodyGroup);
 
-  // 1. Torso / Jersey (Y = 1.05 to 1.55)
-  const torsoGeo = new THREE.BoxGeometry(0.55 * scale, 0.55 * scale, 0.3 * scale);
-  const torsoMesh = new THREE.Mesh(torsoGeo, jerseyMat);
-  torsoMesh.position.y = 1.25 * scale;
-  torsoMesh.castShadow = true;
-  bodyGroup.add(torsoMesh);
+  const isGK = player.position === 'GK';
+  const kitPrimary = isGK ? team.gkColor : team.primaryColor;
+  const kitSecondary = team.secondaryColor;
+  const skinColor = player.skinTone || '#e0b892';
+  const hairColor = player.hairColor || '#1c150e';
 
-  // 2. Neck & Head
-  const neckGeo = new THREE.CylinderGeometry(0.09 * scale, 0.1 * scale, 0.12 * scale, 8);
-  const neckMesh = new THREE.Mesh(neckGeo, skinMat);
-  neckMesh.position.y = 1.58 * scale;
-  bodyGroup.add(neckMesh);
+  const jerseyTex = createJerseyTexture(kitPrimary, kitSecondary, isGK ? 'solid' : team.pattern, player.number);
+  const jerseyMat = new THREE.MeshStandardMaterial({ map: jerseyTex, roughness: 0.65 });
+  const shortsMat = new THREE.MeshStandardMaterial({ color: isGK ? '#0f172a' : kitSecondary, roughness: 0.7 });
+  const skinMat = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.75 });
+  const hairMat = new THREE.MeshStandardMaterial({ color: hairColor, roughness: 0.85 });
+  const bootMat = new THREE.MeshStandardMaterial({ color: 0x09090b, roughness: 0.4 });
+  const sockMat = new THREE.MeshStandardMaterial({ color: kitPrimary, roughness: 0.7 });
 
-  const headGeo = new THREE.SphereGeometry(0.18 * scale, 16, 16);
-  const headMesh = new THREE.Mesh(headGeo, skinMat);
-  headMesh.position.y = 1.76 * scale;
-  headMesh.castShadow = true;
-  bodyGroup.add(headMesh);
+  // Torso
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.6, 0.28), jerseyMat);
+  torso.position.y = 1.05;
+  torso.castShadow = true;
+  bodyGroup.add(torso);
 
-  // Hair styling
-  const hairGeo = new THREE.SphereGeometry(0.19 * scale, 14, 14, 0, Math.PI * 2, 0, Math.PI * 0.55);
-  const hairMesh = new THREE.Mesh(hairGeo, hairMat);
-  hairMesh.position.y = 1.79 * scale;
-  bodyGroup.add(hairMesh);
+  // Shorts
+  const shorts = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.24, 0.27), shortsMat);
+  shorts.position.y = 0.68;
+  shorts.castShadow = true;
+  bodyGroup.add(shorts);
 
-  // 3. Pelvis / Shorts (Y = 0.85 to 1.05)
-  const pelvisGeo = new THREE.BoxGeometry(0.48 * scale, 0.28 * scale, 0.28 * scale);
-  const pelvisMesh = new THREE.Mesh(pelvisGeo, shortsMat);
-  pelvisMesh.position.y = 0.95 * scale;
-  pelvisMesh.castShadow = true;
-  bodyGroup.add(pelvisMesh);
+  // Head + Hair
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 12), skinMat);
+  head.position.y = 1.54;
+  head.castShadow = true;
+  const hair = new THREE.Mesh(
+    new THREE.SphereGeometry(0.168, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    hairMat
+  );
+  hair.position.y = 1.56;
+  bodyGroup.add(head, hair);
 
-  // 4. Legs (Hips at Y = 0.85, Knees at Y = 0.45, Feet at Y = 0.0)
-  const legRadius = 0.08 * scale;
-  const thighLen = 0.42 * scale;
-  const shinLen = 0.42 * scale;
+  // Legs
+  const makeLeg = (xOffset: number) => {
+    const legGroup = new THREE.Group();
+    legGroup.position.set(xOffset, 0.6, 0);
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.072, 0.34, 8), skinMat);
+    thigh.position.y = -0.17;
+    const sock = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.26, 8), sockMat);
+    sock.position.y = -0.44;
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.09, 0.24), bootMat);
+    boot.position.set(0, -0.56, 0.04);
+    legGroup.add(thigh, sock, boot);
+    legGroup.traverse(m => {
+      if ((m as THREE.Mesh).isMesh) m.castShadow = true;
+    });
+    return legGroup;
+  };
+  const leftLeg = makeLeg(-0.13);
+  const rightLeg = makeLeg(0.13);
+  bodyGroup.add(leftLeg, rightLeg);
 
-  // Left Leg
-  const leftLegGroup = new THREE.Group();
-  leftLegGroup.position.set(-0.16 * scale, 0.88 * scale, 0);
+  // Arms
+  const makeArm = (xOffset: number) => {
+    const armGroup = new THREE.Group();
+    armGroup.position.set(xOffset, 1.3, 0);
+    const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.065, 0.24, 8), jerseyMat);
+    sleeve.position.y = -0.11;
+    const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.048, 0.28, 8), skinMat);
+    forearm.position.y = -0.34;
+    armGroup.add(sleeve, forearm);
+    return armGroup;
+  };
+  const leftArm = makeArm(-0.31);
+  const rightArm = makeArm(0.31);
+  bodyGroup.add(leftArm, rightArm);
 
-  const leftThighGeo = new THREE.CylinderGeometry(legRadius, legRadius * 0.9, thighLen, 10);
-  const leftThigh = new THREE.Mesh(leftThighGeo, skinMat);
-  leftThigh.position.y = -thighLen / 2;
-  leftThigh.castShadow = true;
-  leftLegGroup.add(leftThigh);
+  // Controlled Ring on ground
+  const ringMesh = new THREE.Mesh(
+    new THREE.RingGeometry(0.48, 0.64, 24),
+    new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.9 })
+  );
+  ringMesh.rotation.x = -Math.PI / 2;
+  ringMesh.position.y = 0.03;
+  ringMesh.visible = false;
+  group.add(ringMesh);
 
-  const leftKneeGroup = new THREE.Group();
-  leftKneeGroup.position.set(0, -thighLen, 0);
-  leftLegGroup.add(leftKneeGroup);
+  // Direction indicator arrow
+  const arrowShape = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-0.18, 0, 0.65),
+    new THREE.Vector3(0.18, 0, 0.65),
+    new THREE.Vector3(0, 0, 0.95),
+  ]);
+  arrowShape.setIndex([0, 1, 2]);
+  const dirArrowMesh = new THREE.Mesh(
+    arrowShape,
+    new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide })
+  );
+  dirArrowMesh.position.y = 0.035;
+  dirArrowMesh.visible = false;
+  group.add(dirArrowMesh);
 
-  const leftShinGeo = new THREE.CylinderGeometry(legRadius * 0.9, legRadius * 0.8, shinLen, 10);
-  const leftShin = new THREE.Mesh(leftShinGeo, socksMat);
-  leftShin.position.y = -shinLen / 2;
-  leftShin.castShadow = true;
-  leftKneeGroup.add(leftShin);
+  // Overhead Yellow/Red Card indicator
+  const cardSprite = new THREE.Mesh(
+    new THREE.BoxGeometry(0.24, 0.34, 0.04),
+    new THREE.MeshBasicMaterial({ color: 0xfacc15 })
+  );
+  cardSprite.position.y = 2.15;
+  cardSprite.visible = false;
+  group.add(cardSprite);
 
-  const cleatGeo = new THREE.BoxGeometry(0.14 * scale, 0.1 * scale, 0.28 * scale);
-  const leftCleat = new THREE.Mesh(cleatGeo, cleatMat);
-  leftCleat.position.set(0, -shinLen + 0.04 * scale, 0.06 * scale);
-  leftCleat.castShadow = true;
-  leftKneeGroup.add(leftCleat);
+  let phase = Math.random() * Math.PI * 2;
+  let kickTimer = 0;
 
-  bodyGroup.add(leftLegGroup);
-
-  // Right Leg
-  const rightLegGroup = new THREE.Group();
-  rightLegGroup.position.set(0.16 * scale, 0.88 * scale, 0);
-
-  const rightThighGeo = new THREE.CylinderGeometry(legRadius, legRadius * 0.9, thighLen, 10);
-  const rightThigh = new THREE.Mesh(rightThighGeo, skinMat);
-  rightThigh.position.y = -thighLen / 2;
-  rightThigh.castShadow = true;
-  rightLegGroup.add(rightThigh);
-
-  const rightKneeGroup = new THREE.Group();
-  rightKneeGroup.position.set(0, -thighLen, 0);
-  rightLegGroup.add(rightKneeGroup);
-
-  const rightShinGeo = new THREE.CylinderGeometry(legRadius * 0.9, legRadius * 0.8, shinLen, 10);
-  const rightShin = new THREE.Mesh(rightShinGeo, socksMat);
-  rightShin.position.y = -shinLen / 2;
-  rightShin.castShadow = true;
-  rightKneeGroup.add(rightShin);
-
-  const rightCleat = new THREE.Mesh(cleatGeo, cleatMat);
-  rightCleat.position.set(0, -shinLen + 0.04 * scale, 0.06 * scale);
-  rightCleat.castShadow = true;
-  rightKneeGroup.add(rightCleat);
-
-  bodyGroup.add(rightLegGroup);
-
-  // 5. Arms (Shoulders at Y = 1.45, Elbows at Y = 1.15, Hands at Y = 0.85)
-  const armRadius = 0.065 * scale;
-  const armLen = 0.32 * scale;
-  const forearmLen = 0.32 * scale;
-
-  // Left Arm
-  const leftArmGroup = new THREE.Group();
-  leftArmGroup.position.set(-0.35 * scale, 1.45 * scale, 0);
-
-  const leftUpperArm = new THREE.Mesh(new THREE.CylinderGeometry(armRadius, armRadius * 0.9, armLen, 8), jerseyMat);
-  leftUpperArm.position.y = -armLen / 2;
-  leftUpperArm.castShadow = true;
-  leftArmGroup.add(leftUpperArm);
-
-  const leftForearm = new THREE.Mesh(new THREE.CylinderGeometry(armRadius * 0.9, armRadius * 0.8, forearmLen, 8), skinMat);
-  leftForearm.position.y = -armLen - forearmLen / 2;
-  leftForearm.castShadow = true;
-  leftArmGroup.add(leftForearm);
-
-  // GK Gloves or Hand
-  const handMat = isGK ? new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.3 }) : skinMat;
-  const leftHand = new THREE.Mesh(new THREE.SphereGeometry(0.08 * scale, 8, 8), handMat);
-  leftHand.position.y = -armLen - forearmLen;
-  leftArmGroup.add(leftHand);
-
-  bodyGroup.add(leftArmGroup);
-
-  // Right Arm
-  const rightArmGroup = new THREE.Group();
-  rightArmGroup.position.set(0.35 * scale, 1.45 * scale, 0);
-
-  const rightUpperArm = new THREE.Mesh(new THREE.CylinderGeometry(armRadius, armRadius * 0.9, armLen, 8), jerseyMat);
-  rightUpperArm.position.y = -armLen / 2;
-  rightUpperArm.castShadow = true;
-  rightArmGroup.add(rightUpperArm);
-
-  const rightForearm = new THREE.Mesh(new THREE.CylinderGeometry(armRadius * 0.9, armRadius * 0.8, forearmLen, 8), skinMat);
-  rightForearm.position.y = -armLen - forearmLen / 2;
-  rightForearm.castShadow = true;
-  rightArmGroup.add(rightForearm);
-
-  const rightHand = new THREE.Mesh(new THREE.SphereGeometry(0.08 * scale, 8, 8), handMat);
-  rightHand.position.y = -armLen - forearmLen;
-  rightArmGroup.add(rightHand);
-
-  bodyGroup.add(rightArmGroup);
-
-  // 6. Ground Player Indicator Ring & Directional Pointer
-  const indicatorGeo = new THREE.RingGeometry(0.7, 0.85, 32);
-  const indicatorMat = new THREE.MeshBasicMaterial({
-    color: 0x38bdf8,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0,
-  });
-  const indicatorMesh = new THREE.Mesh(indicatorGeo, indicatorMat);
-  indicatorMesh.rotation.x = -Math.PI / 2;
-  indicatorMesh.position.y = 0.02;
-  group.add(indicatorMesh);
-
-  // Direction pointer arrow
-  const arrowShape = new THREE.Shape();
-  arrowShape.moveTo(0, 0.9);
-  arrowShape.lineTo(0.22, 1.25);
-  arrowShape.lineTo(-0.22, 1.25);
-  arrowShape.closePath();
-  const arrowGeo = new THREE.ShapeGeometry(arrowShape);
-  const arrowMat = new THREE.MeshBasicMaterial({
-    color: 0x38bdf8,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0,
-  });
-  const directionArrow = new THREE.Mesh(arrowGeo, arrowMat);
-  directionArrow.rotation.x = -Math.PI / 2;
-  directionArrow.position.y = 0.02;
-  group.add(directionArrow);
-
-  // 7. Overhead Referee Card Mesh (Hidden by default, shows on booking)
-  const cardGeo = new THREE.BoxGeometry(0.25 * scale, 0.4 * scale, 0.02 * scale);
-  const cardMat = new THREE.MeshBasicMaterial({ color: 0xfacc15, visible: false });
-  const cardMesh = new THREE.Mesh(cardGeo, cardMat);
-  cardMesh.position.set(0, 2.3 * scale, 0);
-  group.add(cardMesh);
-
-  const playerObj: Player3D = {
-    data: player,
-    team,
-    isHomeTeam,
+  return {
     group,
     bodyGroup,
-    leftLegGroup,
-    rightLegGroup,
-    leftKneeGroup,
-    rightKneeGroup,
-    leftArmGroup,
-    rightArmGroup,
-    headMesh,
-    indicatorMesh,
-    directionArrow,
-    cardMesh,
-    position: group.position,
-    velocity: new THREE.Vector3(),
-    targetRotationY: isHomeTeam ? Math.PI / 2 : -Math.PI / 2,
-    animTime: Math.random() * 10,
-    kickTimer: 0,
-    slideTimer: 0,
-    diveTimer: 0,
-    diveDirection: 1,
-    celebrateTimer: 0,
-    cardTimer: 0,
-    stamina: player.stamina,
-
-    setPosition(x: number, z: number) {
-      group.position.set(x, 0, z);
+    leftLeg,
+    rightLeg,
+    leftArm,
+    rightArm,
+    ringMesh,
+    dirArrowMesh,
+    cardSprite,
+    setControlled(active: boolean, color = 0x38bdf8) {
+      ringMesh.visible = active;
+      dirArrowMesh.visible = active;
+      (ringMesh.material as THREE.MeshBasicMaterial).color.setHex(color);
     },
-
-    triggerKick() {
-      playerObj.kickTimer = 0.35;
-    },
-
-    triggerSlideTackle() {
-      playerObj.slideTimer = 0.65;
-    },
-
-    triggerDive(direction: number) {
-      playerObj.diveTimer = 0.85;
-      playerObj.diveDirection = direction >= 0 ? 1 : -1;
-    },
-
-    triggerCelebration() {
-      playerObj.celebrateTimer = 3.5;
-    },
-
-    showCard(card: 'yellow' | 'red') {
-      playerObj.cardTimer = 3.0;
-      if (cardMesh) {
-        cardMesh.visible = true;
-        (cardMesh.material as THREE.MeshBasicMaterial).color.setHex(card === 'yellow' ? 0xfacc15 : 0xef4444);
+    showCard(type: 'yellow' | 'red' | null) {
+      if (!type) {
+        cardSprite.visible = false;
+        return;
       }
+      cardSprite.visible = true;
+      (cardSprite.material as THREE.MeshBasicMaterial).color.setHex(type === 'yellow' ? 0xfacc15 : 0xef4444);
     },
+    updateAnimation(dt, speed, isKicking, isTackling, isDiving, isCelebrating) {
+      if (isKicking) kickTimer = 0.28;
+      if (kickTimer > 0) kickTimer = Math.max(0, kickTimer - dt);
 
-    update(dt: number, isControlled: boolean) {
-      playerObj.animTime += dt;
-      const speed = playerObj.velocity.length();
-
-      // Smooth rotation toward movement or facing direction
-      if (playerObj.kickTimer <= 0 && playerObj.diveTimer <= 0) {
-        group.rotation.y = THREE.MathUtils.damp(group.rotation.y, playerObj.targetRotationY, 14, dt);
-      }
-
-      // Update indicator visuals
-      if (isControlled) {
-        (indicatorMesh.material as THREE.MeshBasicMaterial).opacity = 0.9;
-        (indicatorMesh.material as THREE.MeshBasicMaterial).color.setHex(0x38bdf8); // Bright cyan
-        (directionArrow.material as THREE.MeshBasicMaterial).opacity = 0.95;
-        (directionArrow.material as THREE.MeshBasicMaterial).color.setHex(0x38bdf8);
-      } else {
-        (indicatorMesh.material as THREE.MeshBasicMaterial).opacity = 0;
-        (directionArrow.material as THREE.MeshBasicMaterial).opacity = 0;
-      }
-
-      // Handle Special Action Animations
-      if (playerObj.celebrateTimer > 0) {
-        // Goal Celebration: Jump up with arms pumping into air!
-        playerObj.celebrateTimer -= dt;
-        const jumpH = Math.max(0, Math.sin(playerObj.celebrateTimer * 6) * 0.45);
-        bodyGroup.position.y = jumpH;
-        leftArmGroup.rotation.x = -Math.PI * 0.9;
-        rightArmGroup.rotation.x = -Math.PI * 0.9;
-        leftArmGroup.rotation.z = -0.3;
-        rightArmGroup.rotation.z = 0.3;
-        leftLegGroup.rotation.x = 0.1;
-        rightLegGroup.rotation.x = 0.1;
+      if (isDiving !== 0) {
+        bodyGroup.rotation.z = isDiving * 1.15;
+        bodyGroup.position.y = 0.45;
+        leftArm.rotation.z = -0.9;
+        rightArm.rotation.z = 0.9;
         return;
       }
 
-      if (playerObj.diveTimer > 0) {
-        // Goalkeeper Dive Animation
-        playerObj.diveTimer -= dt;
-        const diveProgress = 1 - (playerObj.diveTimer / 0.85);
-        const rollAngle = playerObj.diveDirection * Math.PI * 0.45;
-        bodyGroup.rotation.z = rollAngle * Math.sin(diveProgress * Math.PI);
-        bodyGroup.position.y = Math.sin(diveProgress * Math.PI) * 0.6;
-        leftArmGroup.rotation.z = -Math.PI * 0.8 * playerObj.diveDirection;
-        rightArmGroup.rotation.z = -Math.PI * 0.8 * playerObj.diveDirection;
+      if (isTackling) {
+        bodyGroup.rotation.x = -1.15;
+        bodyGroup.position.y = 0.22;
+        rightLeg.rotation.x = -0.9;
+        leftLeg.rotation.x = 0.4;
         return;
       }
 
-      // Card visual update
-      if (playerObj.cardTimer > 0) {
-        playerObj.cardTimer -= dt;
-        if (cardMesh) {
-          cardMesh.rotation.y += dt * 4;
-          if (playerObj.cardTimer <= 0) {
-            cardMesh.visible = false;
-          }
-        }
-      }
-
-      // Slide Tackle (Podkat) Animation
-      if (playerObj.slideTimer > 0) {
-        playerObj.slideTimer -= dt;
-        const slideProgress = 1 - (playerObj.slideTimer / 0.65);
-        bodyGroup.position.y = -0.35 * Math.sin(slideProgress * Math.PI);
-        bodyGroup.rotation.z = Math.PI * 0.45;
-        bodyGroup.rotation.x = -0.2;
-        rightLegGroup.rotation.x = -Math.PI * 0.55;
-        rightKneeGroup.rotation.x = 0;
-        leftLegGroup.rotation.x = Math.PI * 0.3;
-        leftArmGroup.rotation.x = -Math.PI * 0.4;
-        rightArmGroup.rotation.x = Math.PI * 0.4;
-        return;
-      }
-
-      if (playerObj.kickTimer > 0) {
-        // Kicking Swing Animation
-        playerObj.kickTimer -= dt;
-        const progress = 1 - (playerObj.kickTimer / 0.35);
-        if (progress < 0.4) {
-          // Windup: right leg swings back, torso twists back
-          rightLegGroup.rotation.x = Math.PI * 0.45;
-          rightKneeGroup.rotation.x = -Math.PI * 0.3;
-          leftArmGroup.rotation.x = -Math.PI * 0.3;
-        } else {
-          // Follow-through: powerful strike forward
-          rightLegGroup.rotation.x = -Math.PI * 0.55;
-          rightKneeGroup.rotation.x = 0;
-          bodyGroup.rotation.x = 0.2;
-        }
-        return;
-      }
-
-      // Standard Running / Idle Skeletal Cycle
-      bodyGroup.position.y = 0;
+      bodyGroup.rotation.x = 0;
       bodyGroup.rotation.z = 0;
 
-      if (speed > 0.3) {
-        const strideFreq = 12 + Math.min(speed, 9) * 1.5;
-        const swingAmp = 0.45 + Math.min(speed, 9) * 0.05;
-        const phase = playerObj.animTime * strideFreq;
-
-        const legAngle = Math.sin(phase) * swingAmp;
-        leftLegGroup.rotation.x = legAngle;
-        rightLegGroup.rotation.x = -legAngle;
-
-        // Knees bend during backward swing
-        leftKneeGroup.rotation.x = legAngle > 0 ? -legAngle * 0.7 : 0;
-        rightKneeGroup.rotation.x = -legAngle > 0 ? legAngle * 0.7 : 0;
-
-        // Arms swing in counter-phase to legs
-        leftArmGroup.rotation.x = -legAngle * 0.9;
-        rightArmGroup.rotation.x = legAngle * 0.9;
-        leftArmGroup.rotation.z = 0.15;
-        rightArmGroup.rotation.z = -0.15;
-
-        // Torso leans slightly forward into sprint
-        bodyGroup.rotation.x = Math.min(0.25, speed * 0.03);
-      } else {
-        // Subtle breathing idle
-        const idlePhase = playerObj.animTime * 2.5;
-        leftLegGroup.rotation.x = THREE.MathUtils.damp(leftLegGroup.rotation.x, 0, 10, dt);
-        rightLegGroup.rotation.x = THREE.MathUtils.damp(rightLegGroup.rotation.x, 0, 10, dt);
-        leftKneeGroup.rotation.x = THREE.MathUtils.damp(leftKneeGroup.rotation.x, 0, 10, dt);
-        rightKneeGroup.rotation.x = THREE.MathUtils.damp(rightKneeGroup.rotation.x, 0, 10, dt);
-        leftArmGroup.rotation.x = Math.sin(idlePhase) * 0.05;
-        rightArmGroup.rotation.x = -Math.sin(idlePhase) * 0.05;
-        bodyGroup.rotation.x = 0;
+      if (isCelebrating) {
+        phase += dt * 10;
+        bodyGroup.position.y = Math.abs(Math.sin(phase)) * 0.45;
+        leftArm.rotation.x = -2.4;
+        rightArm.rotation.x = -2.4;
+        leftLeg.rotation.x = 0;
+        rightLeg.rotation.x = 0;
+        return;
       }
-    }
-  };
 
-  return playerObj;
+      if (speed > 0.25) {
+        phase += dt * Math.min(18, 4 + speed * 1.65);
+        const swing = Math.sin(phase) * Math.min(0.95, 0.25 + speed * 0.08);
+        leftLeg.rotation.x = swing;
+        rightLeg.rotation.x = kickTimer > 0 ? -1.15 : -swing;
+        leftArm.rotation.x = -swing * 0.85;
+        rightArm.rotation.x = swing * 0.85;
+        bodyGroup.position.y = Math.abs(Math.cos(phase)) * 0.05;
+      } else {
+        bodyGroup.position.y = 0;
+        leftLeg.rotation.x *= 0.82;
+        rightLeg.rotation.x = kickTimer > 0 ? -1.1 : rightLeg.rotation.x * 0.82;
+        leftArm.rotation.x *= 0.82;
+        rightArm.rotation.x *= 0.82;
+      }
+    },
+  };
 }

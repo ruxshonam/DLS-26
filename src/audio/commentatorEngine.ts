@@ -1,224 +1,148 @@
-/**
- * Live Audio Commentator Engine for Dream League 3D
- * Provides dynamic speech commentary during football matches
- * Supports English & Uzbek commentary, foul calls, goal screams, out calls,
- * extra time, and penalty announcements, with an instant mute toggle.
- */
+type Lang = 'uz' | 'en';
 
 class CommentatorEngine {
-  private synth: SpeechSynthesis | null = null;
-  private voice: SpeechSynthesisVoice | null = null;
-  public isMuted: boolean = false;
-  public volume: number = 0.9;
-  public language: 'uz' | 'en' = 'uz'; // Default to Uzbek/English bilingual commentary
-  private lastCommentTime: number = 0;
-  private speechQueue: string[] = [];
-
-  constructor() {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      this.synth = window.speechSynthesis;
-      this.initVoice();
-      if (this.synth.onvoiceschanged !== undefined) {
-        this.synth.onvoiceschanged = () => this.initVoice();
-      }
-    }
-  }
-
-  private initVoice() {
-    if (!this.synth) return;
-    const voices = this.synth.getVoices();
-    // Try to find natural voices
-    this.voice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Natural')) ||
-                 voices.find(v => v.lang.startsWith('en')) ||
-                 voices[0] || null;
-  }
+  private muted = false;
+  private volume = 0.9;
+  private lang: Lang = 'uz';
+  private lastSpokenAt = 0;
 
   public setMuted(muted: boolean) {
-    this.isMuted = muted;
-    if (muted && this.synth) {
-      this.synth.cancel();
+    this.muted = muted;
+    if (muted && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
     }
+  }
+
+  public isMuted(): boolean {
+    return this.muted;
   }
 
   public setVolume(vol: number) {
     this.volume = Math.max(0, Math.min(1, vol));
   }
 
-  public setLanguage(lang: 'uz' | 'en') {
-    this.language = lang;
+  public setLanguage(lang: Lang) {
+    this.lang = lang;
   }
 
-  public speak(textUz: string, textEn: string, priority: boolean = false) {
-    if (this.isMuted || !this.synth) return;
+  public speak(textUz: string, textEn: string, priority: 'low' | 'normal' | 'high' = 'normal') {
+    if (this.muted || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const now = Date.now();
+    if (priority === 'low' && now - this.lastSpokenAt < 3800) return;
+    if (priority === 'normal' && now - this.lastSpokenAt < 1800) return;
 
-    const now = performance.now();
-    // Prevent overlapping spam unless high-priority event (like Goal / Red Card)
-    if (!priority && now - this.lastCommentTime < 2800) {
-      return;
-    }
-
-    if (priority) {
-      this.synth.cancel();
-    }
-
-    const textToSpeak = this.language === 'uz' ? textUz : textEn;
-    this.lastCommentTime = now;
-
+    this.lastSpokenAt = now;
     try {
-      const utter = new SpeechSynthesisUtterance(textToSpeak);
-      if (this.voice) utter.voice = this.voice;
+      if (priority === 'high') {
+        window.speechSynthesis.cancel();
+      } else if (window.speechSynthesis.speaking) {
+        return;
+      }
+
+      const utter = new SpeechSynthesisUtterance(this.lang === 'uz' ? textUz : textEn);
       utter.volume = this.volume;
-      utter.rate = priority ? 1.15 : 1.05;
-      utter.pitch = priority ? 1.2 : 1.0;
-      this.synth.speak(utter);
-    } catch {
-      // Speech synthesis fallback
-    }
+      utter.rate = priority === 'high' ? 1.12 : 1.04;
+      utter.pitch = priority === 'high' ? 1.1 : 1.0;
+
+      const voices = window.speechSynthesis.getVoices();
+      const targetPrefix = this.lang === 'uz' ? 'uz' : 'en';
+      const preferred =
+        voices.find(v => v.lang.toLowerCase().startsWith(targetPrefix)) ||
+        (this.lang === 'uz' ? voices.find(v => v.lang.toLowerCase().startsWith('tr')) : undefined) ||
+        voices.find(v => v.lang.toLowerCase().startsWith('en'));
+      if (preferred) utter.voice = preferred;
+
+      window.speechSynthesis.speak(utter);
+    } catch {}
   }
 
-  // Common Football Commentary Triggers
-  public commentKickoff(homeTeam: string, awayTeam: string) {
+  public commentKickoff(homeName: string, awayName: string) {
     this.speak(
-      `Assalomu alaykum! ${homeTeam} va ${awayTeam} o'rtasidagi hayajonli uchrashuv boshlandi!`,
-      `Welcome to today's massive match between ${homeTeam} and ${awayTeam}! Kickoff is underway!`,
-      true
+      `Assalomu alaykum! ${homeName} va ${awayName} uchrashuvi boshlandi!`,
+      `Welcome everyone! Kickoff between ${homeName} and ${awayName}!`,
+      'high'
     );
   }
 
-  public commentPass() {
-    const uz = [
-      'Ajoyib uzatma!',
-      'To\'p nazorat qilinmoqda.',
-      'Markaz orqali hujum rivojlanmoqda.',
-      'Chiroyli pas!'
-    ];
-    const en = [
-      'Crisp passing play!',
-      'Good vision to find the open teammate.',
-      'Working the ball through midfield.',
-      'Neat exchange of passes.'
-    ];
-    const idx = Math.floor(Math.random() * uz.length);
-    this.speak(uz[idx], en[idx]);
+  public commentPass(playerName: string) {
+    this.speak(`${playerName} aniq pas uzatdi.`, `${playerName} delivers a crisp pass.`, 'low');
   }
 
-  public commentShot() {
-    const uz = [
-      'Zarba yo\'llandi!',
-      'Darvoza sari kuchli zarba!',
-      'Uzoq masofadan xavfli zarba!'
-    ];
-    const en = [
-      'He strikes it with power!',
-      'Fires towards goal!',
-      'Ambitious effort from distance!'
-    ];
-    const idx = Math.floor(Math.random() * uz.length);
-    this.speak(uz[idx], en[idx], true);
+  public commentShot(playerName: string) {
+    this.speak(`${playerName} kuchli zarba yo'lladi!`, `Powerful strike by ${playerName}!`, 'normal');
   }
 
-  public commentSave() {
+  public commentSave(keeperName: string) {
+    this.speak(`Ajoyib seyv! Darvozabon ${keeperName} to'pni qaytardi!`, `Brilliant save by ${keeperName}!`, 'high');
+  }
+
+  public commentGoal(scorerName: string, teamName: string) {
     this.speak(
-      'Darvozabondan ajoyib seyv! To\'p qaytarildi!',
-      'What a diving save by the goalkeeper! Incredible reflexes!'
+      `Gooool! ${teamName} hisobni o'zgartirdi! Gol muallifi ${scorerName}!`,
+      `Goal! ${scorerName} scores for ${teamName}!`,
+      'high'
     );
   }
 
-  public commentGoal(scorerName: string) {
-    this.speak(
-      `GOOOOOL! ${scorerName} to'pni darvoza to'riga joylab qo'ydi! Aqlbovar qilmas gol!`,
-      `GOOOAAAL! An absolute wonderstrike by ${scorerName}! What a finish!`,
-      true
-    );
+  public commentSlideTackle(playerName: string) {
+    this.speak(`${playerName}dan keskin podkat!`, `Strong sliding tackle from ${playerName}!`, 'normal');
   }
 
-  public commentSlideTackle() {
-    const uz = [
-      'Toza podkat! To\'p olib qo\'yildi.',
-      'Ajoyib himoyalanish podkat bilan!',
-      'Qat\'iy podkat to\'pga.'
-    ];
-    const en = [
-      'Clean sliding tackle to win the ball!',
-      'Superb slide challenge!',
-      'Timed the tackle to perfection!'
-    ];
-    const idx = Math.floor(Math.random() * uz.length);
-    this.speak(uz[idx], en[idx]);
-  }
-
-  public commentFoul(isYellow = false, isRed = false) {
-    if (isRed) {
+  public commentFoul(playerName: string, card: 'yellow' | 'red' | 'none') {
+    if (card === 'red') {
       this.speak(
-        'Qo\'pol qoidabuzarlik! Hakam cho\'ntagidan QIZIL kartochkani chiqardi! Maydondan chetlatish!',
-        'A reckless challenge! The referee shows a straight RED CARD! He is off!',
-        true
+        `Qizil kartochka! ${playerName} maydondan chetlatildi!`,
+        `Red card! ${playerName} is sent off!`,
+        'high'
       );
-    } else if (isYellow) {
+    } else if (card === 'yellow') {
       this.speak(
-        'Qoidabuzarlik! Hakam futbolchiga SARIQ kartochka ko\'rsatmoqda!',
-        'Foul! The referee reaches into his pocket and issues a YELLOW CARD!',
-        true
+        `Sariq kartochka! ${playerName} ogohlantirildi.`,
+        `Yellow card shown to ${playerName}.`,
+        'high'
       );
     } else {
-      this.speak(
-        'Hakam hushtagi chalindi, qoidabuzarlik!',
-        'The referee blows for a foul.'
-      );
+      this.speak(`Qoida buzildi, jarima zarbasi!`, `Foul committed, free kick awarded!`, 'normal');
     }
   }
 
-  public commentFreeKick() {
+  public commentPenalty(teamName: string) {
     this.speak(
-      'Xavfli nuqtadan shtrafnoy zarbasi belgilandi! Jonli devor qurilmoqda.',
-      'Dangerous free kick in shooting range! The wall is set!'
+      `Penalti! ${teamName} foydasiga o'n bir metrlik jarima zarbasi belgilandi!`,
+      `Penalty kick awarded to ${teamName}!`,
+      'high'
     );
   }
 
-  public commentPenalty() {
-    this.speak(
-      'PENALTI! Jarima maydoni ichida qoidabuzarlik va 11 metrlik jarima zarbasi!',
-      'PENALTY! A huge decision inside the box! Penalty awarded!',
-      true
-    );
+  public commentThrowIn(teamName: string) {
+    this.speak(`To'p yon chiziqdan chiqdi, ${teamName} aut tashlaydi.`, `Throw-in for ${teamName}.`, 'normal');
   }
 
-  public commentThrowIn() {
-    this.speak(
-      'To\'p maydon chizig\'idan chiqib ketdi. Aut!',
-      'Ball deflects over the touchline for a throw-in.'
-    );
+  public commentCorner(teamName: string) {
+    this.speak(`Burchak zarbasi! ${teamName} to'pni burchakdan o'yinga kiritadi.`, `Corner kick to ${teamName}!`, 'normal');
   }
 
-  public commentCorner() {
-    this.speak(
-      'Burchak to\'pi! Burchakdan uzatma amalga oshiriladi.',
-      'Corner kick awarded! Big aerial opportunity here.'
-    );
+  public commentGoalKick(teamName: string) {
+    this.speak(`Darvozadan zarba, ${teamName}.`, `Goal kick for ${teamName}.`, 'low');
   }
 
-  public commentGoalKick() {
+  public commentExtraTime(half: 1 | 2) {
     this.speak(
-      'To\'p hujumchidan chiqdi. Darvozadan tepish.',
-      'Goal kick to be taken from the six yard box.'
-    );
-  }
-
-  public commentExtraTime() {
-    this.speak(
-      '90 minut tugadi, hisob teng! 15 sekunddan 2 ta qo\'shimcha bo\'lim boshlanmoqda!',
-      'Full time draw! We move into two dramatic extra time halves!',
-      true
+      `Hisob teng! Qo'shimcha ${half}-taym boshlandi!`,
+      `Scores are level! Extra time half ${half} is underway!`,
+      'high'
     );
   }
 
   public commentPenalties() {
     this.speak(
-      'Qo\'shimcha bo\'limlarda ham g\'olib aniqlanmadi! Endi 5 tadan penaltilar seriyasi boshlanadi!',
-      'Still level after extra time! We head to a high-stakes 5-penalty shootout!',
-      true
+      `G'olib aniqlanmadi! Navbat besh martalik penaltilar seriyasiga!`,
+      `Still tied after extra time! We are heading to a 5-round penalty shootout!`,
+      'high'
     );
   }
 }
 
-export const commentator = new CommentatorEngine();
+export const commentatorEngine = new CommentatorEngine();

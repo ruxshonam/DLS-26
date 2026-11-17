@@ -1,504 +1,525 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { TeamData, PlayerData, GameMode, GameSettings, MatchStats, MatchPlayMode } from './types/game';
-import { INITIAL_TEAMS, getSavedUserTeam, saveUserTeam } from './data/teamsData';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import confetti from 'canvas-confetti';
+import {
+  CameraMode,
+  FoulEvent,
+  GameMode,
+  GameSettings,
+  MatchPlayMode,
+  MatchStats,
+  OutEvent,
+  PenaltyKickerState,
+  PlayerData,
+  TeamData,
+  TournamentMatch,
+  TournamentState,
+} from './types/game';
+import { getCustomClub, getSavedUserTeam, INITIAL_TEAMS, saveUserTeam } from './data/teamsData';
+import { addCoins, addMatchCoachProgress } from './data/clubEconomy';
 import { GameEngine } from './game/gameEngine';
-import { soundEngine } from './audio/soundEngine';
-import { commentator } from './audio/commentatorEngine';
 import { MainMenu } from './components/MainMenu';
 import { ScoreboardHUD } from './components/ScoreboardHUD';
 import { TouchControls } from './components/TouchControls';
 import { PenaltyOverlay } from './components/PenaltyOverlay';
 import { TeamManagementModal } from './components/TeamManagementModal';
+import { TransferMarketModal } from './components/TransferMarketModal';
 import { CustomClubModal } from './components/CustomClubModal';
 import { SettingsModal } from './components/SettingsModal';
 import { TournamentModal } from './components/TournamentModal';
 import { MatchSummaryModal } from './components/MatchSummaryModal';
-import { TransferMarketModal } from './components/TransferMarketModal';
 import { FriendMatchModal } from './components/FriendMatchModal';
-import { Play, RotateCcw, Home, Volume2, VolumeX, Eye } from 'lucide-react';
+import { soundEngine } from './audio/soundEngine';
+import { commentatorEngine } from './audio/commentatorEngine';
+
+const DEFAULT_SETTINGS: GameSettings = {
+  cameraMode: 'broadcast',
+  difficulty: 'pro',
+  matchDurationMinutes: 3,
+  sfxVolume: 0.75,
+  crowdVolume: 0.45,
+  commentaryEnabled: true,
+  commentaryLanguage: 'uz',
+  showRadar: true,
+  autoSwitch: true,
+};
+
+const EMPTY_STATS: MatchStats = {
+  homeScore: 0,
+  awayScore: 0,
+  homeShots: 0,
+  awayShots: 0,
+  homeShotsOnTarget: 0,
+  awayShotsOnTarget: 0,
+  homePossessionTime: 1,
+  awayPossessionTime: 1,
+  homePasses: 0,
+  awayPasses: 0,
+  homeTackles: 0,
+  awayTackles: 0,
+  homeYellowCards: 0,
+  awayYellowCards: 0,
+  homeRedCards: 0,
+  awayRedCards: 0,
+  homeCorners: 0,
+  awayCorners: 0,
+  goalLog: [],
+};
+
+function createTournament(userTeamId: string): TournamentState {
+  const pool = INITIAL_TEAMS.filter(t => t.id !== userTeamId).slice(0, 7);
+  const all = [userTeamId, ...pool.map(t => t.id)];
+  const matches: TournamentMatch[] = [
+    { id: 'qf1', round: 'Quarter-Final', homeTeamId: all[0], awayTeamId: all[1] },
+    { id: 'qf2', round: 'Quarter-Final', homeTeamId: all[2], awayTeamId: all[3] },
+    { id: 'qf3', round: 'Quarter-Final', homeTeamId: all[4], awayTeamId: all[5] },
+    { id: 'qf4', round: 'Quarter-Final', homeTeamId: all[6], awayTeamId: all[7] },
+  ];
+  return { active: true, currentRound: 'Quarter-Final', matches, userTeamId };
+}
 
 export default function App() {
-  const canvasMountRef = useRef<HTMLDivElement | null>(null);
-  const engineRef = useRef<GameEngine | null>(null);
-
-  // Active Screen & Game State
-  const [activeScreen, setActiveScreen] = useState<'menu' | 'match'>('menu');
-  const [gameMode, setGameMode] = useState<GameMode>('quick');
-
-  // Teams with local persistence
   const [userTeam, setUserTeam] = useState<TeamData>(() => {
-    return getSavedUserTeam();
+    const saved = getSavedUserTeam();
+    const custom = getCustomClub();
+    return custom || saved;
   });
-  const [opponentTeam, setOpponentTeam] = useState<TeamData>(INITIAL_TEAMS[1]);
+  const [opponentTeam, setOpponentTeam] = useState<TeamData>(() => INITIAL_TEAMS[1]);
+  const [activeMode, setActiveMode] = useState<GameMode>('menu');
+  const [playMode, setPlayMode] = useState<MatchPlayMode>('1p');
+  const [onlineRole, setOnlineRole] = useState<'host' | 'guest' | null>(null);
 
-  // Handle persistent user team updates (renamed players, swapped lineup, club name, kits, transfers)
-  const handleUpdateUserTeam = (newTeam: TeamData) => {
-    setUserTeam(newTeam);
-    saveUserTeam(newTeam);
-    if (engineRef.current) {
-      engineRef.current.applyTeamUpdate(newTeam, true);
-    }
-  };
-
-  // Settings
-  const [settings, setSettings] = useState<GameSettings>({
-    soundEnabled: true,
-    commentaryEnabled: true,
-    commentaryLanguage: 'uz',
-    crowdVolume: 0.8,
-    sfxVolume: 0.8,
-    matchDurationMinutes: 3,
-    difficulty: 'amateur',
-    cameraMode: 'tele',
-    showRadar: true,
-    autoSwitch: true,
-    matchPlayMode: '1player',
+  const [settings, setSettings] = useState<GameSettings>(() => {
+    try {
+      const raw = localStorage.getItem('dls3d_settings');
+      if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    } catch {}
+    return DEFAULT_SETTINGS;
   });
-
-  // Live Match Telemetry
-  const [homeScore, setHomeScore] = useState(0);
-  const [awayScore, setAwayScore] = useState(0);
-  const [matchMinute, setMatchMinute] = useState(0);
-  const [matchSecond, setMatchSecond] = useState(0);
-  const [currentHalf, setCurrentHalf] = useState<1 | 2 | 'extra' | 'penalties' | 'ended'>(1);
-  const [periodStatus, setPeriodStatus] = useState<'kickoff' | 'playing' | 'halftime' | 'fulltime' | 'extra_time_1' | 'extra_time_2' | 'penalty_shootout' | 'goal_replay' | 'throw_in' | 'corner_kick' | 'goal_kick' | 'free_kick'>('kickoff');
-  const [controlledPlayer, setControlledPlayer] = useState<PlayerData | null>(null);
-  const [controlledStamina, setControlledStamina] = useState(100);
-  const [powerMeter, setPowerMeter] = useState<{ power: number; actionType: 'shoot' | 'pass' | 'through' }>({
-    power: 0,
-    actionType: 'shoot',
-  });
-  const [goalEvent, setGoalEvent] = useState<{ scorerName: string; teamId: string; shotSpeedKmh: number } | null>(null);
-  const [isPaused, setIsPaused] = useState(false);
-
-  // Penalty Mode State
-  const [penaltyRoundsHome, setPenaltyRoundsHome] = useState<(boolean | null)[]>([null, null, null, null, null]);
-  const [penaltyRoundsAway, setPenaltyRoundsAway] = useState<(boolean | null)[]>([null, null, null, null, null]);
-  const [penaltyAimX, setPenaltyAimX] = useState(0);
 
   // Modals
   const [showSquadModal, setShowSquadModal] = useState(false);
-  const [showClubModal, setShowClubModal] = useState(false);
+  const [showMarketModal, setShowMarketModal] = useState(false);
+  const [showCustomClubModal, setShowCustomClubModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showFriendModal, setShowFriendModal] = useState(false);
   const [showTournamentModal, setShowTournamentModal] = useState(false);
-  const [showTransferMarket, setShowTransferMarket] = useState(false);
-  const [showFriendMatch, setShowFriendMatch] = useState(false);
-  const [showMatchSummary, setShowMatchSummary] = useState(false);
-  const [matchStats, setMatchStats] = useState<MatchStats | null>(null);
+  const [tournament, setTournament] = useState<TournamentState>(() => createTournament(userTeam.id));
 
-  // Keep audio engines synced with settings
+  // Match HUD State
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const engineRef = useRef<GameEngine | null>(null);
+  const [stats, setStats] = useState<MatchStats>(EMPTY_STATS);
+  const [matchMinute, setMatchMinute] = useState(0);
+  const [half, setHalf] = useState<1 | 2 | 'extra' | 'penalties' | 'ended'>(1);
+  const [periodStatus, setPeriodStatus] = useState('1-TAYM');
+  const [powerMeter, setPowerMeter] = useState(0);
+  const [controlledPlayer, setControlledPlayer] = useState<PlayerData | null>(null);
+  const [p2ControlledPlayer, setP2ControlledPlayer] = useState<PlayerData | null>(null);
+  const [goalBanner, setGoalBanner] = useState<{ scorer: string; teamName: string; isHome: boolean } | null>(null);
+  const [foulBanner, setFoulBanner] = useState<FoulEvent | null>(null);
+  const [outBanner, setOutBanner] = useState<OutEvent | null>(null);
+  const [radarData, setRadarData] = useState<{
+    ball: { x: number; z: number };
+    home: { x: number; z: number; controlled: boolean }[];
+    away: { x: number; z: number; controlled: boolean }[];
+  } | null>(null);
+  const [isSoundOn, setIsSoundOn] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
+  const [summaryType, setSummaryType] = useState<'halftime' | 'fulltime' | null>(null);
+  const [matchReward, setMatchReward] = useState<{ coins: number; fitsecPct: number; technacolPct: number } | null>(null);
+
+  // 5-Round Penalty State
+  const [penaltyState, setPenaltyState] = useState<PenaltyKickerState | null>(null);
+
   useEffect(() => {
-    soundEngine.setSoundEnabled(settings.soundEnabled);
-    commentator.setMuted(!settings.commentaryEnabled);
-    commentator.setLanguage(settings.commentaryLanguage);
-  }, [settings.soundEnabled, settings.commentaryEnabled, settings.commentaryLanguage]);
+    soundEngine.setVolumes(settings.sfxVolume, settings.crowdVolume);
+    commentatorEngine.setMuted(!settings.commentaryEnabled);
+    commentatorEngine.setLanguage(settings.commentaryLanguage);
+    try {
+      localStorage.setItem('dls3d_settings', JSON.stringify(settings));
+    } catch {}
+  }, [settings]);
 
-  // Initialize or Re-initialize Game Engine
-  const startMatch = (mode: GameMode, home = userTeam, away = opponentTeam) => {
-    if (engineRef.current) {
-      engineRef.current.destroy();
-      engineRef.current = null;
-    }
+  const handleUpdateUserTeam = useCallback((updated: TeamData) => {
+    setUserTeam(updated);
+    saveUserTeam(updated);
+    engineRef.current?.applyTeamUpdate(updated, onlineRole !== 'guest');
+  }, [onlineRole]);
 
-    if (!canvasMountRef.current) return;
+  const grantMatchRewards = useCallback((homeGoals: number, awayGoals: number) => {
+    const won = homeGoals > awayGoals;
+    const draw = homeGoals === awayGoals;
+    const rewardCoins = won ? 1800 : draw ? 950 : 550;
+    const fitsecPct = won ? 40 : 25;
+    const technacolPct = won ? 40 : 25;
+    addCoins(rewardCoins);
+    addMatchCoachProgress(fitsecPct, technacolPct);
+    setMatchReward({ coins: rewardCoins, fitsecPct, technacolPct });
+  }, []);
 
-    setGameMode(mode);
-    setHomeScore(0);
-    setAwayScore(0);
-    setMatchMinute(0);
-    setMatchSecond(0);
-    setCurrentHalf(1);
-    setPeriodStatus(mode === 'penalty' ? 'playing' : 'kickoff');
-    setIsPaused(false);
-    setShowMatchSummary(false);
-    setGoalEvent(null);
-    setPenaltyRoundsHome([null, null, null, null, null]);
-    setPenaltyRoundsAway([null, null, null, null, null]);
+  const advanceTournamentOnResult = useCallback(
+    (homeGoals: number, awayGoals: number) => {
+      setTournament(prev => {
+        const idx = prev.matches.findIndex(
+          m => !m.winnerId && (m.homeTeamId === prev.userTeamId || m.awayTeamId === prev.userTeamId)
+        );
+        if (idx === -1) return prev;
+        const updatedMatches = [...prev.matches];
+        const m = updatedMatches[idx];
+        const homeWon = homeGoals >= awayGoals;
+        updatedMatches[idx] = {
+          ...m,
+          homeScore: homeGoals,
+          awayScore: awayGoals,
+          winnerId: homeWon ? m.homeTeamId : m.awayTeamId,
+        };
+
+        // Simulate other matches in same round
+        updatedMatches.forEach((om, i) => {
+          if (om.round === m.round && !om.winnerId) {
+            const s1 = Math.floor(Math.random() * 3) + 1;
+            const s2 = Math.floor(Math.random() * 2);
+            updatedMatches[i] = {
+              ...om,
+              homeScore: s1,
+              awayScore: s2,
+              winnerId: s1 >= s2 ? om.homeTeamId : om.awayTeamId,
+            };
+          }
+        });
+
+        const userLost = updatedMatches[idx].winnerId !== prev.userTeamId;
+        if (userLost) {
+          return { ...prev, currentRound: 'Eliminated', matches: updatedMatches };
+        }
+        if (m.round === 'Final') {
+          return { ...prev, currentRound: 'Champion', matches: updatedMatches };
+        }
+
+        const nextRound = m.round === 'Quarter-Final' ? 'Semi-Final' : 'Final';
+        const winners = updatedMatches.filter(x => x.round === m.round).map(x => x.winnerId!);
+        for (let i = 0; i < winners.length; i += 2) {
+          if (winners[i] && winners[i + 1]) {
+            updatedMatches.push({
+              id: `${nextRound}_${i}`,
+              round: nextRound,
+              homeTeamId: winners[i],
+              awayTeamId: winners[i + 1],
+            });
+          }
+        }
+        return { ...prev, currentRound: nextRound, matches: updatedMatches };
+      });
+    },
+    []
+  );
+
+  const initPenaltyShootoutState = useCallback(() => {
+    setPenaltyState({
+      round: 1,
+      maxRounds: 5,
+      turn: 'home',
+      homeResults: ['pending', 'pending', 'pending', 'pending', 'pending'],
+      awayResults: ['pending', 'pending', 'pending', 'pending', 'pending'],
+      homeScore: 0,
+      awayScore: 0,
+      finished: false,
+      winner: null,
+    });
+  }, []);
+
+  const launchMatch = useCallback(
+    (mode: GameMode, opponent: TeamData, role: 'host' | 'guest' | null = null) => {
+      setOpponentTeam(opponent);
+      setOnlineRole(role);
+      setStats(EMPTY_STATS);
+      setMatchMinute(0);
+      setHalf(mode === 'penalty' ? 'penalties' : 1);
+      setPeriodStatus(mode === 'penalty' ? 'PENALTILAR' : '1-TAYM');
+      setSummaryType(null);
+      setMatchReward(null);
+      setIsPaused(false);
+      setGoalBanner(null);
+      setFoulBanner(null);
+      setOutBanner(null);
+      if (mode === 'penalty') initPenaltyShootoutState();
+      else setPenaltyState(null);
+      setActiveMode(mode);
+    },
+    [initPenaltyShootoutState]
+  );
+
+  // Mount & Dispose 3D GameEngine when activeMode !== 'menu'
+  useEffect(() => {
+    if (activeMode === 'menu' || !containerRef.current) return;
+
+    const home = onlineRole === 'guest' ? opponentTeam : userTeam;
+    const away = onlineRole === 'guest' ? userTeam : opponentTeam;
 
     const engine = new GameEngine(
-      canvasMountRef.current,
+      containerRef.current,
       home,
       away,
-      mode,
+      activeMode,
+      playMode,
       settings,
+      onlineRole,
       {
-        onScoreUpdate: (h, a) => {
-          setHomeScore(h);
-          setAwayScore(a);
-        },
-        onTimeUpdate: (min, sec, half) => {
+        onScoreUpdate: s => setStats(s),
+        onTimeUpdate: (min, h, status) => {
           setMatchMinute(min);
-          setMatchSecond(sec);
-          setCurrentHalf(half);
+          setHalf(h);
+          setPeriodStatus(status);
         },
-        onGoal: (scorer, teamId, speed) => {
-          setGoalEvent({ scorerName: scorer, teamId, shotSpeedKmh: speed });
-          setTimeout(() => setGoalEvent(null), 4000);
+        onGoalScored: (scorer, isHome, teamName) => {
+          setGoalBanner({ scorer, isHome, teamName });
+          confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });
+          setTimeout(() => setGoalBanner(null), 3200);
         },
-        onMatchPeriodChange: period => {
-          setPeriodStatus(period);
-          if (period === 'halftime' || period === 'fulltime') {
-            if (engineRef.current) {
-              setMatchStats({ ...engineRef.current.matchStats });
-            }
-            setShowMatchSummary(true);
+        onFoul: foul => {
+          setFoulBanner(foul);
+          setTimeout(() => setFoulBanner(null), 2800);
+        },
+        onOut: out => {
+          setOutBanner(out);
+          setTimeout(() => setOutBanner(null), 2200);
+        },
+        onHalfTime: s => {
+          setStats(s);
+          setSummaryType('halftime');
+        },
+        onFullTime: s => {
+          setStats(s);
+          grantMatchRewards(s.homeScore, s.awayScore);
+          if (activeMode === 'tournament') {
+            advanceTournamentOnResult(s.homeScore, s.awayScore);
           }
+          setSummaryType('fulltime');
         },
-        onControlledPlayerChange: (p, stamina) => {
-          setControlledPlayer(p);
-          setControlledStamina(stamina);
+        onStartExtraTime: () => {
+          setOutBanner({ type: 'freekick' as never, teamName: "QO'SHIMCHA 2x15s TAYM BOSHLANDI!", isHome: true });
+          setTimeout(() => setOutBanner(null), 3000);
         },
-        onPowerMeterChange: (power, actionType) => {
-          setPowerMeter({ power, actionType });
+        onStartPenalties: () => {
+          initPenaltyShootoutState();
         },
-        onPenaltyRoundUpdate: (_userTurn, homeRounds, awayRounds) => {
-          setPenaltyRoundsHome([...homeRounds]);
-          setPenaltyRoundsAway([...awayRounds]);
+        onPenaltyAttemptResult: (isGoal, isHome) => {
+          setPenaltyState(prev => {
+            if (!prev) return prev;
+            const next = {
+              ...prev,
+              homeResults: [...prev.homeResults],
+              awayResults: [...prev.awayResults],
+            };
+            const idx = next.round - 1;
+            if (isHome) {
+              if (idx < next.homeResults.length) next.homeResults[idx] = isGoal ? 'goal' : 'miss';
+              if (isGoal) next.homeScore++;
+              next.turn = 'away';
+              setTimeout(() => engineRef.current?.executeAiPenaltyKick(), 950);
+            } else {
+              if (idx < next.awayResults.length) next.awayResults[idx] = isGoal ? 'goal' : 'miss';
+              if (isGoal) next.awayScore++;
+
+              if (next.round >= next.maxRounds && next.homeScore !== next.awayScore) {
+                next.finished = true;
+                next.winner = next.homeScore > next.awayScore ? 'home' : 'away';
+                setTimeout(() => {
+                  grantMatchRewards(next.homeScore, next.awayScore);
+                  if (activeMode === 'tournament') {
+                    advanceTournamentOnResult(next.homeScore, next.awayScore);
+                  }
+                  setSummaryType('fulltime');
+                }, 900);
+              } else {
+                if (next.round >= next.maxRounds && next.homeScore === next.awayScore) {
+                  next.maxRounds++;
+                  next.homeResults.push('pending');
+                  next.awayResults.push('pending');
+                }
+                next.round++;
+                next.turn = 'home';
+              }
+            }
+            return next;
+          });
         },
+        onPowerChange: p => setPowerMeter(p),
+        onControlledPlayerChange: (p1, p2) => {
+          setControlledPlayer(p1);
+          setP2ControlledPlayer(p2 || null);
+        },
+        onRadarUpdate: data => setRadarData(data),
       }
     );
 
     engineRef.current = engine;
-    setActiveScreen('match');
-  };
-
-  // Launch initial engine for Menu background preview
-  useEffect(() => {
-    if (!canvasMountRef.current) return;
-
-    if (!engineRef.current) {
-      const engine = new GameEngine(
-        canvasMountRef.current,
-        userTeam,
-        opponentTeam,
-        'quick',
-        settings,
-        {
-          onScoreUpdate: (h, a) => {
-            setHomeScore(h);
-            setAwayScore(a);
-          },
-          onTimeUpdate: (min, sec, half) => {
-            setMatchMinute(min);
-            setMatchSecond(sec);
-            setCurrentHalf(half);
-          },
-          onGoal: (scorer, teamId, speed) => {
-            setGoalEvent({ scorerName: scorer, teamId, shotSpeedKmh: speed });
-          },
-          onMatchPeriodChange: period => {
-            setPeriodStatus(period);
-          },
-          onControlledPlayerChange: (p, stamina) => {
-            setControlledPlayer(p);
-            setControlledStamina(stamina);
-          },
-          onPowerMeterChange: (power, actionType) => {
-            setPowerMeter({ power, actionType });
-          },
-        }
-      );
-      engineRef.current = engine;
-    }
-
     return () => {
-      if (engineRef.current) {
-        engineRef.current.destroy();
-        engineRef.current = null;
-      }
+      engine.dispose();
+      engineRef.current = null;
     };
-  }, []);
+    // Intentionally mount engine on mode/opponent/role start only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMode, opponentTeam.id, onlineRole, playMode]);
 
-  // Sync penalty aim oscillation
-  useEffect(() => {
-    if (activeScreen === 'match' && (gameMode === 'penalty' || periodStatus === 'penalty_shootout')) {
-      const interval = setInterval(() => {
-        if (engineRef.current) {
-          setPenaltyAimX(engineRef.current.penaltyAimX);
-        }
-      }, 50);
-      return () => clearInterval(interval);
-    }
-  }, [activeScreen, gameMode, periodStatus]);
-
-  const handlePauseToggle = () => {
-    const nextPaused = !isPaused;
-    setIsPaused(nextPaused);
-    if (engineRef.current) {
-      engineRef.current.setPaused(nextPaused);
-    }
+  const handleCycleCamera = () => {
+    const order: CameraMode[] = ['broadcast', 'tv_wide', 'pro', 'action', 'sideline'];
+    const next = order[(order.indexOf(settings.cameraMode) + 1) % order.length];
+    setSettings(s => ({ ...s, cameraMode: next }));
+    engineRef.current?.setCameraMode(next);
   };
 
-  const handleCameraCycle = () => {
-    const modes: ('tele' | 'dynamic' | 'topdown' | 'endtoend')[] = ['tele', 'dynamic', 'topdown', 'endtoend'];
-    const nextIdx = (modes.indexOf(settings.cameraMode) + 1) % modes.length;
-    const nextMode = modes[nextIdx];
-    const newSettings = { ...settings, cameraMode: nextMode };
-    setSettings(newSettings);
-    if (engineRef.current) {
-      engineRef.current.settings = newSettings;
-    }
-  };
-
-  const handleSoundToggle = () => {
-    const enabled = !settings.soundEnabled;
-    const newSettings = { ...settings, soundEnabled: enabled };
-    setSettings(newSettings);
-    soundEngine.setSoundEnabled(enabled);
-    if (engineRef.current) {
-      engineRef.current.settings = newSettings;
-    }
-  };
-
-  const handleCommentaryToggle = () => {
-    const enabled = !settings.commentaryEnabled;
-    const newSettings = { ...settings, commentaryEnabled: enabled };
-    setSettings(newSettings);
-    commentator.setMuted(!enabled);
-    if (engineRef.current) {
-      engineRef.current.settings = newSettings;
-    }
-  };
-
-  const handleExitToMenu = () => {
-    setShowMatchSummary(false);
-    setIsPaused(false);
-    setActiveScreen('menu');
-    if (engineRef.current) {
-      engineRef.current.setupPeriod('kickoff');
-      engineRef.current.setPaused(false);
-    }
-  };
-
-  return (
-    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans select-none">
-      {/* 1. 3D WebGL Canvas Viewport Container */}
-      <div ref={canvasMountRef} className="absolute inset-0 w-full h-full z-0 pointer-events-auto" />
-
-      {/* 2. Main Menu Overlay */}
-      {activeScreen === 'menu' && (
+  if (activeMode === 'menu') {
+    return (
+      <>
         <MainMenu
           userTeam={userTeam}
           opponentTeam={opponentTeam}
-          matchPlayMode={settings.matchPlayMode}
-          onSelectUserTeam={handleUpdateUserTeam}
-          onSelectOpponentTeam={setOpponentTeam}
-          onSelectPlayMode={pm => {
-            const newSettings = { ...settings, matchPlayMode: pm };
-            setSettings(newSettings);
-            if (engineRef.current) engineRef.current.settings = newSettings;
-          }}
-          onStartGame={mode => startMatch(mode)}
-          onOpenSquadManagement={() => setShowSquadModal(true)}
-          onOpenClubCustomizer={() => setShowClubModal(true)}
-          onOpenTransferMarket={() => setShowTransferMarket(true)}
-          onOpenFriendMatch={() => setShowFriendMatch(true)}
+          playMode={playMode}
+          onChangePlayMode={setPlayMode}
+          onSelectOpponent={setOpponentTeam}
+          onStartMode={m => launchMatch(m, opponentTeam, null)}
+          onOpenTeamManagement={() => setShowSquadModal(true)}
+          onOpenTransferMarket={() => setShowMarketModal(true)}
+          onOpenCustomClub={() => setShowCustomClubModal(true)}
           onOpenSettings={() => setShowSettingsModal(true)}
+          onOpenFriendMatch={() => setShowFriendModal(true)}
           onOpenTournament={() => setShowTournamentModal(true)}
-          soundEnabled={settings.soundEnabled}
-          onSoundToggle={handleSoundToggle}
         />
-      )}
 
-      {/* 3. In-Game Match View Overlay */}
-      {activeScreen === 'match' && (
-        <>
-          {/* Live Scoreboard HUD */}
-          <ScoreboardHUD
-            engine={engineRef.current}
-            homeTeam={userTeam}
-            awayTeam={opponentTeam}
-            homeScore={homeScore}
-            awayScore={awayScore}
-            matchMinute={matchMinute}
-            matchSecond={matchSecond}
-            currentHalf={currentHalf}
-            periodStatus={periodStatus}
-            controlledPlayer={controlledPlayer}
-            controlledStamina={controlledStamina}
-            powerMeter={powerMeter}
-            goalEvent={goalEvent}
-            onPauseToggle={handlePauseToggle}
-            isPaused={isPaused}
-            onCameraCycle={handleCameraCycle}
-            soundEnabled={settings.soundEnabled}
-            onSoundToggle={handleSoundToggle}
-            commentaryEnabled={settings.commentaryEnabled}
-            onCommentaryToggle={handleCommentaryToggle}
-            showRadar={settings.showRadar}
-            matchPlayMode={settings.matchPlayMode}
+        {showSquadModal && (
+          <TeamManagementModal
+            team={userTeam}
+            onUpdateTeam={handleUpdateUserTeam}
+            onOpenTransferMarket={() => setShowMarketModal(true)}
+            onClose={() => setShowSquadModal(false)}
           />
+        )}
 
-          {/* Penalty Shootout Overlay (Active during Penalty Mode OR during Post-Extra-Time Tiebreaker) */}
-          {(gameMode === 'penalty' || periodStatus === 'penalty_shootout') && (
-            <PenaltyOverlay
-              engine={engineRef.current}
-              homeScore={homeScore}
-              awayScore={awayScore}
-              penaltyAimX={penaltyAimX}
-              roundsHome={penaltyRoundsHome}
-              roundsAway={penaltyRoundsAway}
-              isUserShooting={true}
-              onShoot={() => {
-                if (engineRef.current) {
-                  engineRef.current.startCharge(1, 'shoot');
-                  setTimeout(() => {
-                    engineRef.current?.executeChargedAction(1);
-                  }, 200);
-                }
-              }}
-            />
-          )}
+        {showMarketModal && (
+          <TransferMarketModal
+            userTeam={userTeam}
+            onUpdateUserTeam={handleUpdateUserTeam}
+            onOpenSquad={() => setShowSquadModal(true)}
+            onClose={() => setShowMarketModal(false)}
+          />
+        )}
 
-          {/* On-screen Touch Controls (Virtual Joystick & Action Buttons) */}
-          <TouchControls engine={engineRef.current} />
+        {showCustomClubModal && (
+          <CustomClubModal
+            currentTeam={userTeam}
+            onSaveClub={handleUpdateUserTeam}
+            onClose={() => setShowCustomClubModal(false)}
+          />
+        )}
 
-          {/* In-Game Pause Menu Modal */}
-          {isPaused && (
-            <div className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md">
-              <div className="w-full max-w-sm rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl p-6 flex flex-col items-center gap-4 text-slate-100">
-                <h3 className="font-athletic text-3xl font-black uppercase tracking-wider text-white">
-                  Match Paused
-                </h3>
-                <div className="w-full flex flex-col gap-2.5 mt-2">
-                  <button
-                    onClick={handlePauseToggle}
-                    className="w-full py-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-sm transition-all shadow-lg flex items-center justify-center gap-2"
-                  >
-                    <Play className="w-4 h-4 fill-current" />
-                    <span>Resume Match</span>
-                  </button>
+        {showSettingsModal && (
+          <SettingsModal
+            settings={settings}
+            onUpdateSettings={setSettings}
+            onClose={() => setShowSettingsModal(false)}
+          />
+        )}
 
-                  <button
-                    onClick={handleCommentaryToggle}
-                    className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs transition-all border border-slate-700 flex items-center justify-center gap-2"
-                  >
-                    <span>🎙️ Commentary ({settings.commentaryEnabled ? 'ON' : 'OFF'})</span>
-                  </button>
+        {showFriendModal && (
+          <FriendMatchModal
+            userTeam={userTeam}
+            onStartOnlineMatch={(role, opp) => {
+              setShowFriendModal(false);
+              launchMatch('friend', opp, role);
+            }}
+            onClose={() => setShowFriendModal(false)}
+          />
+        )}
 
-                  <button
-                    onClick={handleCameraCycle}
-                    className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs transition-all border border-slate-700 flex items-center justify-center gap-2"
-                  >
-                    <Eye className="w-4 h-4" />
-                    <span>Camera Angle ({settings.cameraMode})</span>
-                  </button>
+        {showTournamentModal && (
+          <TournamentModal
+            tournament={tournament}
+            userTeam={userTeam}
+            onPlayMatch={opp => {
+              setShowTournamentModal(false);
+              launchMatch('tournament', opp, null);
+            }}
+            onResetTournament={() => setTournament(createTournament(userTeam.id))}
+            onClose={() => setShowTournamentModal(false)}
+          />
+        )}
+      </>
+    );
+  }
 
-                  <button
-                    onClick={() => {
-                      setShowSquadModal(true);
-                      handlePauseToggle();
-                    }}
-                    className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs transition-all border border-slate-700"
-                  >
-                    Tactics & Substitutions
-                  </button>
+  const displayHome = onlineRole === 'guest' ? opponentTeam : userTeam;
+  const displayAway = onlineRole === 'guest' ? userTeam : opponentTeam;
 
-                  <button
-                    onClick={() => startMatch(gameMode)}
-                    className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs transition-all border border-slate-700 flex items-center justify-center gap-2"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    <span>Restart Match</span>
-                  </button>
+  return (
+    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 select-none">
+      <div ref={containerRef} className="w-full h-full" />
 
-                  <button
-                    onClick={handleExitToMenu}
-                    className="w-full py-2.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 font-bold text-xs transition-all border border-rose-800/60 flex items-center justify-center gap-2 mt-2"
-                  >
-                    <Home className="w-4 h-4" />
-                    <span>Quit to Main Menu</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
+      <ScoreboardHUD
+        homeTeam={displayHome}
+        awayTeam={displayAway}
+        stats={stats}
+        matchMinute={matchMinute}
+        half={half}
+        periodStatus={periodStatus}
+        mode={activeMode}
+        playMode={playMode}
+        powerMeter={powerMeter}
+        controlledPlayer={controlledPlayer}
+        p2ControlledPlayer={p2ControlledPlayer}
+        goalBanner={goalBanner}
+        foulBanner={foulBanner}
+        outBanner={outBanner}
+        radarData={radarData}
+        showRadar={settings.showRadar}
+        cameraMode={settings.cameraMode}
+        isSoundOn={isSoundOn}
+        isCommentaryMuted={!settings.commentaryEnabled}
+        isPaused={isPaused}
+        onToggleSound={() => {
+          const next = !isSoundOn;
+          setIsSoundOn(next);
+          soundEngine.setSoundEnabled(next);
+        }}
+        onToggleCommentary={() => {
+          setSettings(s => ({ ...s, commentaryEnabled: !s.commentaryEnabled }));
+        }}
+        onCycleCamera={handleCycleCamera}
+        onTogglePause={() => {
+          const next = !isPaused;
+          setIsPaused(next);
+          engineRef.current?.setMatchTimeState(half === 'ended' ? 2 : half, next);
+        }}
+        onExitMatch={() => {
+          setActiveMode('menu');
+        }}
+      />
 
-      {/* 4. Squad & Tactics Modal */}
-      {showSquadModal && (
-        <TeamManagementModal
-          team={userTeam}
-          onUpdateTeam={handleUpdateUserTeam}
-          onClose={() => setShowSquadModal(false)}
+      {half === 'penalties' && penaltyState && (
+        <PenaltyOverlay
+          penaltyState={penaltyState}
+          homeName={displayHome.name}
+          awayName={displayAway.name}
+          onShoot={(aimX, aimY, pwr) => engineRef.current?.executePenaltyKick(aimX, aimY, pwr)}
         />
       )}
 
-      {/* 5. Custom Club & Kit Creator Modal */}
-      {showClubModal && (
-        <CustomClubModal
-          initialClub={userTeam}
-          onSaveClub={handleUpdateUserTeam}
-          onClose={() => setShowClubModal(false)}
-        />
-      )}
+      {half !== 'penalties' && <TouchControls engineRef={engineRef} />}
 
-      {/* 6. Transfer Market Modal */}
-      {showTransferMarket && (
-        <TransferMarketModal
-          userTeam={userTeam}
-          onUpdateUserTeam={handleUpdateUserTeam}
-          onClose={() => setShowTransferMarket(false)}
-        />
-      )}
-
-      {/* 7. Friend Match Online Remote Modal */}
-      {showFriendMatch && (
-        <FriendMatchModal
-          userTeam={userTeam}
-          onStartOnlineMatch={(role, roomId, remoteTeam) => {
-            setShowFriendMatch(false);
-            setOpponentTeam(remoteTeam);
-            startMatch('friend', userTeam, remoteTeam);
-          }}
-          onClose={() => setShowFriendMatch(false)}
-        />
-      )}
-
-      {/* 8. Settings Modal */}
-      {showSettingsModal && (
-        <SettingsModal
-          settings={settings}
-          onUpdateSettings={setSettings}
-          onClose={() => setShowSettingsModal(false)}
-        />
-      )}
-
-      {/* 9. Tournament Mode Modal */}
-      {showTournamentModal && (
-        <TournamentModal
-          userTeam={userTeam}
-          onStartTournamentMatch={(home, away) => {
-            setShowTournamentModal(false);
-            startMatch('tournament', home, away);
-          }}
-          onClose={() => setShowTournamentModal(false)}
-        />
-      )}
-
-      {/* 10. Half-time & Full-time Match Summary Modal */}
-      {showMatchSummary && matchStats && (
+      {summaryType && (
         <MatchSummaryModal
-          isHalfTime={periodStatus === 'halftime'}
-          homeTeam={userTeam}
-          awayTeam={opponentTeam}
-          homeScore={homeScore}
-          awayScore={awayScore}
-          stats={matchStats}
-          onContinue={() => {
-            setShowMatchSummary(false);
-            if (periodStatus === 'halftime') {
-              if (engineRef.current) {
-                engineRef.current.setupPeriod('kickoff');
-                engineRef.current.periodStatus = 'playing';
-              }
-            } else {
-              handleExitToMenu();
-            }
+          type={summaryType}
+          homeTeam={displayHome}
+          awayTeam={displayAway}
+          stats={stats}
+          penaltyState={penaltyState}
+          matchReward={matchReward}
+          onContinueSecondHalf={() => {
+            setSummaryType(null);
+            engineRef.current?.resumeSecondHalf();
           }}
-          onRematch={() => startMatch(gameMode)}
-          onExitToMenu={handleExitToMenu}
+          onReplay={() => launchMatch(activeMode, opponentTeam, onlineRole)}
+          onBackToMenu={() => setActiveMode('menu')}
         />
       )}
     </div>

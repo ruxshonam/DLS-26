@@ -18,8 +18,8 @@ interface Room {
   id: string;
   host: WebSocket;
   guest?: WebSocket;
-  hostTeam?: any;
-  guestTeam?: any;
+  hostTeam?: unknown;
+  guestTeam?: unknown;
 }
 
 const rooms = new Map<string, Room>();
@@ -30,6 +30,11 @@ wss.on('connection', (ws: WebSocket) => {
   ws.on('message', (data: string) => {
     try {
       const msg = JSON.parse(data.toString());
+
+      if (msg.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong' }));
+        return;
+      }
 
       if (msg.type === 'create_room') {
         const roomId = Math.floor(100000 + Math.random() * 900000).toString();
@@ -43,11 +48,11 @@ wss.on('connection', (ws: WebSocket) => {
       } else if (msg.type === 'join_room') {
         const room = rooms.get(msg.roomId);
         if (!room) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
+          ws.send(JSON.stringify({ type: 'error', message: 'Xona topilmadi (Room not found)' }));
           return;
         }
         if (room.guest) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Room is already full' }));
+          ws.send(JSON.stringify({ type: 'error', message: 'Xona band (Room is already full)' }));
           return;
         }
         room.guest = ws;
@@ -55,9 +60,10 @@ wss.on('connection', (ws: WebSocket) => {
         userRoomId = msg.roomId;
 
         ws.send(JSON.stringify({ type: 'room_joined', roomId: msg.roomId, role: 'guest', hostTeam: room.hostTeam }));
-        room.host.send(JSON.stringify({ type: 'guest_joined', guestTeam: msg.team }));
+        if (room.host.readyState === WebSocket.OPEN) {
+          room.host.send(JSON.stringify({ type: 'guest_joined', guestTeam: msg.team }));
+        }
       } else if (msg.type === 'relay') {
-        // Forward game state or input to the other player in the room
         if (userRoomId && rooms.has(userRoomId)) {
           const room = rooms.get(userRoomId)!;
           const target = ws === room.host ? room.guest : room.host;
@@ -66,7 +72,7 @@ wss.on('connection', (ws: WebSocket) => {
           }
         }
       }
-    } catch (err) {
+    } catch {
       // ignore malformed message
     }
   });
@@ -81,6 +87,24 @@ wss.on('connection', (ws: WebSocket) => {
       rooms.delete(userRoomId);
     }
   });
+});
+
+// Google Search Console & Crawler endpoints
+app.get('/robots.txt', (req, res) => {
+  const baseUrl = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+  res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: ${baseUrl}/sitemap.xml\n`);
+});
+
+app.get('/sitemap.xml', (req, res) => {
+  const baseUrl = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+  res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>${baseUrl}/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>`);
 });
 
 app.get('/api/health', (req, res) => {
@@ -98,7 +122,7 @@ async function start() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(__dirname, 'dist', 'index.html'));
     });
   }

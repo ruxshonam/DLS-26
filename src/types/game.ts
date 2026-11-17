@@ -1,9 +1,16 @@
-export type PlayerPosition = 
-  | 'GK' 
-  | 'CB' | 'LB' | 'RB' 
-  | 'CDM' | 'CM' | 'CAM' 
-  | 'LM' | 'RM' 
-  | 'LW' | 'RW' | 'ST';
+export type PlayerPosition =
+  | 'GK'
+  | 'CB'
+  | 'LB'
+  | 'RB'
+  | 'CDM'
+  | 'CM'
+  | 'CAM'
+  | 'LM'
+  | 'RM'
+  | 'LW'
+  | 'RW'
+  | 'ST';
 
 export interface PlayerAttributes {
   pace: number;
@@ -24,115 +31,105 @@ export interface PlayerData {
   stamina: number;
   skinTone?: string;
   hairColor?: string;
-  hairStyle?: 'short' | 'spiky' | 'curly' | 'fade';
-  height?: number;
-  yellowCards?: number;
-  isRedCarded?: boolean;
 }
 
 export type KitPattern = 'solid' | 'stripes' | 'hoops' | 'sash';
-
 export type FormationType = '4-3-3' | '4-4-2' | '3-5-2' | '4-2-3-1';
 
 export interface TeamData {
   id: string;
   name: string;
   shortName: string;
-  country: string;
+  stadiumName: string;
+  formation: FormationType;
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;
   gkColor: string;
-  kitPattern: KitPattern;
-  stadiumName: string;
-  formation: FormationType;
+  pattern: KitPattern;
+  isCustom?: boolean;
   players: PlayerData[];
 }
 
-export type GameMode = 'quick' | 'tournament' | 'penalty' | 'training' | 'friend';
-
-export type MatchPlayMode = '1player' | '2players_local' | 'online_friend';
-
-export type CameraMode = 'tele' | 'dynamic' | 'topdown' | 'endtoend';
-
-export type AIDifficulty = 'beginner' | 'amateur' | 'legend';
+export type GameMode = 'menu' | 'quick' | 'training' | 'penalty' | 'tournament' | 'friend';
+export type MatchPlayMode = '1p' | '2p';
+export type CameraMode = 'broadcast' | 'tv_wide' | 'pro' | 'action' | 'sideline';
+export type AIDifficulty = 'amateur' | 'pro' | 'world_class' | 'legendary';
 
 export interface GameSettings {
-  soundEnabled: boolean;
+  cameraMode: CameraMode;
+  difficulty: AIDifficulty;
+  matchDurationMinutes: number; // real-time match duration in minutes (e.g. 2, 3, 5)
+  sfxVolume: number;
+  crowdVolume: number;
   commentaryEnabled: boolean;
   commentaryLanguage: 'uz' | 'en';
-  crowdVolume: number;
-  sfxVolume: number;
-  matchDurationMinutes: number; // 3, 5, 8
-  difficulty: AIDifficulty;
-  cameraMode: CameraMode;
   showRadar: boolean;
   autoSwitch: boolean;
-  matchPlayMode: MatchPlayMode;
 }
 
 export interface FoulEvent {
-  player: PlayerData;
-  teamId: string;
-  cardType: 'none' | 'yellow' | 'red';
-  isPenalty: boolean;
+  type: 'yellow' | 'red' | 'freekick' | 'penalty';
+  playerName: string;
+  teamName: string;
+  isHome: boolean;
 }
 
 export interface OutEvent {
   type: 'throw_in' | 'corner' | 'goal_kick';
-  awardedTeamId: string;
-  x: number;
-  z: number;
+  teamName: string;
+  isHome: boolean;
 }
 
 export interface MatchStats {
+  homeScore: number;
+  awayScore: number;
   homeShots: number;
   awayShots: number;
   homeShotsOnTarget: number;
   awayShotsOnTarget: number;
-  homePasses: number;
-  awayPasses: number;
   homePossessionTime: number;
   awayPossessionTime: number;
-  homeCorners: number;
-  awayCorners: number;
+  homePasses: number;
+  awayPasses: number;
   homeTackles: number;
   awayTackles: number;
-  homeFouls: number;
-  awayFouls: number;
   homeYellowCards: number;
   awayYellowCards: number;
   homeRedCards: number;
   awayRedCards: number;
-  goals: {
-    scorerName: string;
-    teamId: string;
-    minute: number;
-    shotSpeedKmh: number;
-  }[];
+  homeCorners: number;
+  awayCorners: number;
+  goalLog: { minute: number; scorer: string; isHome: boolean; penalty?: boolean }[];
 }
 
 export interface TournamentMatch {
   id: string;
-  round: 'quarter' | 'semi' | 'final';
-  homeTeam: TeamData;
-  awayTeam: TeamData;
+  round: 'Quarter-Final' | 'Semi-Final' | 'Final';
+  homeTeamId: string;
+  awayTeamId: string;
   homeScore?: number;
   awayScore?: number;
-  winnerTeamId?: string;
-  played: boolean;
+  winnerId?: string;
 }
 
 export interface TournamentState {
-  currentRound: 'quarter' | 'semi' | 'final' | 'champion';
+  active: boolean;
+  currentRound: 'Quarter-Final' | 'Semi-Final' | 'Final' | 'Champion' | 'Eliminated';
   matches: TournamentMatch[];
   userTeamId: string;
 }
 
 export interface PenaltyKickerState {
-  teamId: string;
-  kicker: PlayerData;
-  score: boolean | null;
+  round: number;
+  maxRounds: number;
+  turn: 'home' | 'away';
+  homeResults: ('goal' | 'miss' | 'pending')[];
+  awayResults: ('goal' | 'miss' | 'pending')[];
+  homeScore: number;
+  awayScore: number;
+  finished: boolean;
+  winner: 'home' | 'away' | null;
 }
 
 export interface MarketPlayer {
@@ -143,5 +140,4 @@ export interface MarketPlayer {
   rating: number;
   price: number;
   attributes: PlayerAttributes;
-  photoUrl?: string;
 }

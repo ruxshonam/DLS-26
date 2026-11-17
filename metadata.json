@@ -1,6 +1,6 @@
 {
   "name": "Dream League 3D - Pro Football",
-  "description": "Professional 3D football game inspired by Dream League Soccer featuring 11v11 matches, realistic physics, team customization, tournament mode, and dynamic stadium graphics.",
+  "description": "Play Dream League 3D football in your browser! Build your club, sign stars in the Transfer Market, train players with Fitsec and Technacol coaches, and play 11v11 or online with friends.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
